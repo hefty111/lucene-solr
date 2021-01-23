@@ -1189,6 +1189,7 @@ public class RealTimeGetComponent extends SearchComponent
 
     // TODO: get this from cache instead of rebuilding?
     try (UpdateLog.RecentUpdates recentUpdates = ulog.getRecentUpdates()) {
+      log.info("Get updates  versionsRequested={} params={}", versions.size(), params);
       for (Long version : versions) {
         try {
           Object o = recentUpdates.lookup(version);

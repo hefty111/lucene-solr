@@ -244,7 +244,7 @@ public class PeerSyncWithLeader implements SolrMetricProducer {
 
     MissedUpdatesRequest updatesRequest = missedUpdatesFinder.find(otherVersions, leaderUrl, () -> core.getSolrConfig().useRangeVersionsForPeerSync && canHandleVersionRanges());
     if (updatesRequest == MissedUpdatesRequest.EMPTY) {
-      if (doFingerprint) return MissedUpdatesRequest.UNABLE_TO_SYNC;
+      if (doFingerprint && updatesRequest.totalRequestedUpdates > 0) return MissedUpdatesRequest.UNABLE_TO_SYNC;
       return MissedUpdatesRequest.ALREADY_IN_SYNC;
     }
 
@@ -273,7 +273,7 @@ public class PeerSyncWithLeader implements SolrMetricProducer {
     List<Object> updates = (List<Object>)rsp.get("updates");
 
     if (updates.size() < numRequestedUpdates) {
-      log.error("{} Requested {} updated from {} but retrieved {}", msg(), numRequestedUpdates, leaderUrl, updates.size());
+      log.error("{} Requested {} updated from {} but retrieved {} {}", msg(), numRequestedUpdates, leaderUrl, updates.size(), rsp);
       return false;
     }
 
@@ -298,13 +298,16 @@ public class PeerSyncWithLeader implements SolrMetricProducer {
         // only DBI or DBQ in the gap (above) will satisfy this predicate
         return version > leaderFingerprint.getMaxVersionEncountered() && (oper == UpdateLog.DELETE || oper == UpdateLog.DELETE_BY_QUERY);
       });
+      log.info("existDBIOrDBQInTheGap={}", existDBIOrDBQInTheGap);
       if (!existDBIOrDBQInTheGap) {
         // it is safe to use leaderFingerprint.maxVersionEncountered as cut point now.
         updates.removeIf(e -> {
           @SuppressWarnings({"unchecked"})
           List<Object> u = (List<Object>) e;
           long version = (Long) u.get(1);
-          return version > leaderFingerprint.getMaxVersionEncountered();
+          boolean success = version > leaderFingerprint.getMaxVersionEncountered();
+          log.info("existDBIOrDBQInTheGap version={}  leaderFingerprint.getMaxVersionEncountered={} success={}", version, leaderFingerprint.getMaxVersionEncountered(), success);
+          return success;
         });
       }
     }
@@ -312,6 +315,7 @@ public class PeerSyncWithLeader implements SolrMetricProducer {
     try {
       updater.applyUpdates(updates, leaderUrl);
     } catch (Exception e) {
+      log.error("Could not apply updates", e);
       return false;
     }
     return true;
@@ -386,6 +390,7 @@ public class PeerSyncWithLeader implements SolrMetricProducer {
       if (cmp != 0) {
         if (log.isDebugEnabled()) log.debug("Leader fingerprint: {}, Our fingerprint: {}", leaderFingerprint , ourFingerprint);
       }
+
       return cmp == 0;  // currently, we only check for equality...
     } catch (IOException e) {
       log.warn("Could not confirm if we are already in sync. Continue with PeerSync");
@@ -426,7 +431,7 @@ public class PeerSyncWithLeader implements SolrMetricProducer {
       boolean completeList = leaderVersions.size() < nUpdates;
       MissedUpdatesRequest updatesRequest;
       if (canHandleVersionRanges.get()) {
-        updatesRequest = handleVersionsWithRanges(leaderVersions, completeList);
+        updatesRequest = handleVersionsWithRanges(ourUpdates, leaderVersions, completeList, ourLowThreshold);
       } else {
         updatesRequest = handleIndividualVersions(leaderVersions, completeList);
       }

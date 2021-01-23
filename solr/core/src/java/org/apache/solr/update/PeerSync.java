@@ -441,7 +441,7 @@ public class PeerSync implements SolrMetricProducer {
     Object fingerprint = srsp.getSolrResponse().getResponse().get("fingerprint");
 
     if (log.isInfoEnabled()) {
-      log.info("{} Received {} versions from {} fingerprint:{}", msg(), otherVersions.size(), sreq.shards[0], fingerprint);
+      log.info("{} Received {} versions from {} {} fingerprint:{}", msg(), otherVersions.size(), otherVersions, sreq.shards[0], fingerprint);
     }
     if (fingerprint != null) {
       sreq.fingerprint = IndexFingerprint.fromObject(fingerprint);
@@ -524,7 +524,7 @@ public class PeerSync implements SolrMetricProducer {
 
     SyncShardRequest sreq = (SyncShardRequest) srsp.getShardRequest();
     if (updates.size() < sreq.totalRequestedUpdates) {
-      log.error("{} Requested {} updates from {} but retrieved {}", msg(), sreq.totalRequestedUpdates, sreq.shards[0], updates.size());
+      log.error("{} Requested {} updates from {} but retrieved {} {}", msg(), sreq.totalRequestedUpdates, sreq.shards[0], updates.size(), srsp.getSolrResponse().getResponse());
       return false;
     }
     
@@ -746,7 +746,7 @@ public class PeerSync implements SolrMetricProducer {
       return true;
     }
 
-    MissedUpdatesRequest handleVersionsWithRanges(List<Long> otherVersions, boolean completeList) {
+    static MissedUpdatesRequest handleVersionsWithRanges(List<Long> ourUpdates, List<Long> otherVersions, boolean completeList, long ourLowThreshold) {
       // we may endup asking for updates for too many versions, causing 2MB post payload limit. Construct a range of
       // versions to request instead of asking individual versions
       List<String> rangesToRequest = new ArrayList<>();
@@ -788,7 +788,29 @@ public class PeerSync implements SolrMetricProducer {
       }
 
       String rangesToRequestStr = rangesToRequest.stream().collect(Collectors.joining(","));
+
+      log.info("handleVersionsWithRanges rangesToRequestStr={} otherVersions={} ourVersions={} completeList={} totalRequestedVersions={}", rangesToRequestStr, otherVersions, ourUpdates, completeList, totalRequestedVersions);
+
       return MissedUpdatesRequest.of(rangesToRequestStr, totalRequestedVersions);
+    }
+
+    public static void main(String[] args) {
+
+      List<Long> ourUpdates = new ArrayList<>();
+      ourUpdates.add(1689636098592997376l);
+      ourUpdates.add(1689636098591948800l);
+      ourUpdates.add(1689636098531131395l);
+      ourUpdates.add(1689636098531131394l);
+
+//1689636098592997376, 1689636098591948800, 1689636098585657345
+      List<Long> otherVersions = new ArrayList<>();
+      otherVersions.add(1689636098531131395l);
+      otherVersions.add(1689636098531131394l);
+      otherVersions.add(0l);
+//1689636098531131395, 1689636098531131394, 0
+      MissedUpdatesRequest result = handleVersionsWithRanges(ourUpdates, otherVersions, false, 0);
+      System.out.println(result.versionsAndRanges);
+      System.out.println(result.totalRequestedUpdates);
     }
 
     MissedUpdatesRequest handleIndividualVersions(List<Long> otherVersions, boolean completeList) {
@@ -867,7 +889,7 @@ public class PeerSync implements SolrMetricProducer {
 
       MissedUpdatesRequest updatesRequest;
       if (canHandleVersionRanges.get()) {
-        updatesRequest = handleVersionsWithRanges(otherVersions, completeList);
+        updatesRequest = handleVersionsWithRanges(ourUpdates, otherVersions, completeList, ourLowThreshold);
       } else {
         updatesRequest = handleIndividualVersions(otherVersions, completeList);
       }

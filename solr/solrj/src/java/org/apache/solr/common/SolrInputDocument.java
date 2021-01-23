@@ -19,6 +19,7 @@ package org.apache.solr.common;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -42,7 +43,7 @@ public class SolrInputDocument extends SolrDocumentBase<SolrInputField, SolrInpu
   private List<SolrInputDocument> _childDocuments;
 
   public SolrInputDocument(String... fields) {
-    _fields = new LinkedHashMap<>();
+    _fields = Collections.synchronizedMap(new LinkedHashMap<>());
     assert fields.length % 2 == 0;
     for (int i = 0; i < fields.length; i += 2) {
       addField(fields[i], fields[i + 1]);

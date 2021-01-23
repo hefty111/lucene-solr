@@ -56,7 +56,6 @@ import org.apache.solr.util.plugin.NamedListInitializedPlugin;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import static org.apache.solr.common.cloud.ZkStateReader.COLLECTIONS_ZKNODE;
 import java.io.Closeable;
 import java.io.IOException;
 import java.lang.invoke.MethodHandles;
@@ -230,10 +229,11 @@ public class RecoveryStrategy implements Runnable, Closeable {
 
     log.info("Attempting to replicate from [{}].", leaderprops);
 
-    final String leaderUrl = getReplicateLeaderUrl(leaderprops, zkStateReader);
-
+    String leaderUrl;
     // send commit
     try {
+      Replica leader = zkController.getZkStateReader().getLeaderRetry(coreDescriptor.getCollectionName(), coreDescriptor.getCloudDescriptor().getShardId(), 1500, false);
+      leaderUrl = leader.getCoreUrl();
       commitOnLeader(leaderUrl);
     } catch (Exception e) {
       log.error("Commit on leader failed", e);
@@ -610,20 +610,6 @@ public class RecoveryStrategy implements Runnable, Closeable {
           return false;
         }
 
-        log.info("Begin buffering updates. core=[{}]", coreName);
-        // recalling buffer updates will drop the old buffer tlog
-        ulog.bufferUpdates();
-
-//        try {
-//          if (prevSendPreRecoveryHttpUriRequest != null) {
-//            prevSendPreRecoveryHttpUriRequest.cancel();
-//          }
-//        } catch (NullPointerException e) {
-//          // okay
-//        }
-       // TODO can we do this with commit on leader
-        sendPrepRecoveryCmd(leader.getBaseUrl(), leader.getName(), zkStateReader.getClusterState().getCollection(coreDescriptor.getCollectionName()).getSlice(cloudDesc.getShardId()));
-
         // we wait a bit so that any updates on the leader
         // that started before they saw recovering state
         // are sure to have finished (see SOLR-7141 for
@@ -683,6 +669,20 @@ public class RecoveryStrategy implements Runnable, Closeable {
           log.info("Starting Replication Recovery.");
 
           try {
+
+            log.info("Begin buffering updates. core=[{}]", coreName);
+            // recalling buffer updates will drop the old buffer tlog
+            ulog.bufferUpdates();
+
+            //        try {
+            //          if (prevSendPreRecoveryHttpUriRequest != null) {
+            //            prevSendPreRecoveryHttpUriRequest.cancel();
+            //          }
+            //        } catch (NullPointerException e) {
+            //          // okay
+            //        }
+            // TODO can we do this with commit on leader
+            sendPrepRecoveryCmd(leader.getBaseUrl(), leader.getName(), zkStateReader.getClusterState().getCollection(coreDescriptor.getCollectionName()).getSlice(cloudDesc.getShardId()));
 
             IndexFetcher.IndexFetchResult result = replicate(leader);
 

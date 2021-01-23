@@ -102,7 +102,6 @@ import org.apache.solr.util.SystemIdResolver;
 import org.apache.zookeeper.KeeperException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.slf4j.MDC;
 
 import static java.util.Objects.requireNonNull;
 import static org.apache.solr.common.params.CommonParams.AUTHC_PATH;
@@ -158,7 +157,6 @@ public class CoreContainer implements Closeable {
   private static final Logger log = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
 
   final SolrCores solrCores = new SolrCores(this);
-  private final boolean isZkAware;
   private volatile boolean startedLoadingCores;
   private volatile boolean loaded;
 
@@ -347,18 +345,16 @@ public class CoreContainer implements Closeable {
     assert ObjectReleaseTracker.track(this);
     assert (closeTracker = new CloseTracker()) != null;
     this.containerProperties = new Properties(config.getSolrProperties());
-    String zkHost = System.getProperty("zkHost");
-    if (!StringUtils.isEmpty(zkHost)) {
-      zkSys = new ZkContainer(zkClient);
-      isZkAware = true;
-    } else {
-      isZkAware = false;
-    }
 
     this.loader = config.getSolrResourceLoader();
 
     this.solrHome = config.getSolrHome();
     this.cfg = requireNonNull(config);
+
+    if (zkClient != null) {
+      zkSys = new ZkContainer(zkClient);
+      zkSys.initZooKeeper(this, cfg.getCloudConfig());
+    }
 
     if (null != this.cfg.getBooleanQueryMaxClauseCount()) {
       IndexSearcher.setMaxClauseCount(this.cfg.getBooleanQueryMaxClauseCount());
@@ -403,9 +399,7 @@ public class CoreContainer implements Closeable {
         }
       });
     }
-    if (zkClient != null) {
-      zkSys.initZooKeeper(this, cfg.getCloudConfig());
-    }
+
     coreConfigService = ConfigSetService.createConfigSetService(cfg, loader, zkSys == null ? null : zkSys.zkController);
 
     containerProperties.putAll(cfg.getSolrProperties());
@@ -606,7 +600,6 @@ public class CoreContainer implements Closeable {
     cfg = null;
     containerProperties = null;
     replayUpdatesExecutor = null;
-    isZkAware = false;
   }
 
 
@@ -881,26 +874,26 @@ public class CoreContainer implements Closeable {
     status |= CORE_DISCOVERY_COMPLETE;
     startedLoadingCores = true;
     for (final CoreDescriptor cd : cds) {
-//      if (isZooKeeperAware()) {
-//        String collection = cd.getCollectionName();
-//        try {
-//          zkSys.zkController.zkStateReader.waitForState(collection, 5, TimeUnit.SECONDS, (n, c) -> {
-//            if (c != null) {
-//              Replica replica = c.getReplica(cd.getName());
-//
-//              if (replica.getState().equals(State.DOWN)) {
-//                return true;
-//              }
-//
-//            }
-//            return false;
-//          });
-//        } catch (InterruptedException e) {
-//          ParWork.propagateInterrupt(e);
-//        } catch (TimeoutException e) {
-//          log.error("Timeout", e);
-//        }
-//      }
+      if (isZooKeeperAware()) {
+        String collection = cd.getCollectionName();
+        try {
+          zkSys.zkController.zkStateReader.waitForState(collection, 5, TimeUnit.SECONDS, (n, c) -> {
+            if (c != null) {
+              Replica replica = c.getReplica(cd.getName());
+
+              if (replica.getState().equals(State.DOWN)) {
+                return true;
+              }
+
+            }
+            return false;
+          });
+        } catch (InterruptedException e) {
+          ParWork.propagateInterrupt(e);
+        } catch (TimeoutException e) {
+          log.error("Timeout", e);
+        }
+      }
 
       if (log.isDebugEnabled()) log.debug("Process core descriptor {} {} {}", cd.getName(), cd.isTransient(), cd.isLoadOnStartup());
       if (cd.isTransient() || !cd.isLoadOnStartup()) {
@@ -911,25 +904,20 @@ public class CoreContainer implements Closeable {
       if (cd.isLoadOnStartup()) {
 
         coreLoadFutures.add(solrCoreLoadExecutor.submit(() -> {
-          SolrCore core;
+          SolrCore core = null;
           MDCLoggingContext.setCoreDescriptor(this, cd);
           try {
             try {
 
               core = createFromDescriptor(cd, false);
 
-              if (core.getDirectoryFactory().isSharedStorage()) {
-                if (isZooKeeperAware()) {
-                  zkSys.getZkController().throwErrorIfReplicaReplaced(cd);
-                }
-              }
-
             } finally {
               solrCores.markCoreAsNotLoading(cd);
             }
-            if (isZooKeeperAware()) {
-              new ZkController.RegisterCoreAsync(zkSys.zkController, cd, false).call();
-            }
+
+          } catch (Exception e){
+            log.error("Error creating and register core {}", cd.getName(), e);
+            throw e;
           } finally {
             MDCLoggingContext.clear();
           }
@@ -1409,9 +1397,7 @@ public class CoreContainer implements Closeable {
             throw new AlreadyClosedException("Solr has been shutdown.");
           }
           solrCores.markCoreAsLoading(dcore);
-          if (isZooKeeperAware()) {
-            ParWork.getRootSharedExecutor().submit(new ZkController.RegisterCoreAsync(zkSys.zkController, dcore, false));
-          }
+
           core = new SolrCore(this, dcore, coreConfig);
         } catch (Exception e) {
           core = processCoreCreateException(e, dcore, coreConfig);
@@ -1421,6 +1407,17 @@ public class CoreContainer implements Closeable {
 
         old = registerCore(dcore, core, true);
         registered = true;
+        solrCores.markCoreAsNotLoading(dcore);
+
+        if (isZooKeeperAware()) {
+          if (!newCollection) {
+            if (core.getDirectoryFactory().isSharedStorage()) {
+              zkSys.getZkController().throwErrorIfReplicaReplaced(dcore);
+            }
+          }
+          new ZkController.RegisterCoreAsync(zkSys.zkController, dcore, false).call();
+        }
+
       } catch (Exception e) {
 
         throw new SolrException(ErrorCode.SERVER_ERROR, e);
@@ -2168,7 +2165,7 @@ public class CoreContainer implements Closeable {
   }
 
   public boolean isZooKeeperAware() {
-    return isZkAware && zkSys != null && zkSys.zkController != null;
+    return zkSys != null && zkSys.zkController != null;
   }
 
   public ZkController getZkController() {

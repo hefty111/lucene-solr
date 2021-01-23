@@ -44,10 +44,8 @@ import org.apache.solr.common.SolrException.ErrorCode;
 import org.apache.solr.common.cloud.Replica;
 import org.apache.solr.common.params.CommonParams;
 import org.apache.solr.common.params.ModifiableSolrParams;
-import org.apache.solr.common.util.ExecutorUtil;
 import org.apache.solr.common.util.FastInputStream;
 import org.apache.solr.common.util.NamedList;
-import org.apache.solr.common.util.SolrNamedThreadFactory;
 import org.apache.solr.common.util.SuppressForbidden;
 import org.apache.solr.core.DirectoryFactory;
 import org.apache.solr.core.DirectoryFactory.DirContext;
@@ -522,7 +520,7 @@ public class IndexFetcher {
       }
 
       // Create the sync service
-      fsyncService = ExecutorUtil.newMDCAwareSingleThreadExecutor(new SolrNamedThreadFactory("fsyncService"));
+      fsyncService = ParWork.getExecutorService(15);
       // use a synchronized list because the list is read by other threads (to show details)
       filesDownloaded = Collections.synchronizedList(new ArrayList<Map<String, Object>>());
       // if the generation of master is older than that of the slave , it means they are not compatible to be copied
@@ -812,7 +810,6 @@ public class IndexFetcher {
    * terminate the fsync service and wait for all the tasks to complete. If it is already terminated
    */
   private void terminateAndWaitFsyncService() throws Exception {
-    if (fsyncServiceFuture == null || fsyncService.isTerminated()) return;
     fsyncService.shutdown();
     // give a long wait say 1 hr
     fsyncService.awaitTermination(3600, TimeUnit.SECONDS);
@@ -1722,11 +1719,11 @@ public class IndexFetcher {
         throw e;
       } finally {
         cleanup(null);
-        //if cleanup succeeds . The file is downloaded fully. do an fsync
+        //if cleanup succeeds . The file is downloaded fully
         fsyncServiceFuture = fsyncService.submit(() -> {
           try {
-            log.info("Sync and close fetched file", file);
-            file.sync();
+            log.info("Close fetched file", file);
+            file.close();
           } catch (Exception e) {
             fsyncException = e;
           }

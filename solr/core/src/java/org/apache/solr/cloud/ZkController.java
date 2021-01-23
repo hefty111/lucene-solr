@@ -329,9 +329,8 @@ public class ZkController implements Closeable, Runnable {
     }
 
     public Object call() throws Exception {
-      if (log.isInfoEnabled()) {
-        log.info("Registering core {} afterExpiration? {}", descriptor.getName(), afterExpiration);
-      }
+      log.info("Registering core with ZK {} afterExpiration? {}", descriptor.getName(), afterExpiration);
+
 
       if (zkController.isDcCalled() || zkController.getCoreContainer().isShutDown() || (afterExpiration && !descriptor.getCloudDescriptor().hasRegistered())) {
         return null;
@@ -1422,25 +1421,26 @@ public class ZkController implements Closeable, Runnable {
 
       log.info("Wait to see leader for {}, {}", collection, shardId);
       Replica leader = null;
-      for (int i = 0; i < 30; i++) {
-//        if (leaderElector.isLeader()) {
-//          leader = replica;
-//          break;
-//        }
+      for (int i = 0; i < 15; i++) {
+        if (leaderElector.isLeader()) {
+          leader = replica;
+          break;
+        }
 
         try {
-          if (getCoreContainer().isShutDown() || isDcCalled() || isClosed()) {
-            throw new AlreadyClosedException();
-          }
+//          if (getCoreContainer().isShutDown() || isDcCalled() || isClosed()) {
+//            throw new AlreadyClosedException();
+//          }
 
-          leader = zkStateReader.getLeaderRetry(collection, shardId, 500, false);
+          leader = zkStateReader.getLeaderRetry(collection, shardId, 1500, false);
 
         } catch (TimeoutException timeoutException) {
-
+           log.info("Timeout waiting to see leader, retry");
         }
       }
 
       if (leader == null) {
+        log.error("No leader found while trying to register " + coreName + " with zookeeper");
         throw new SolrException(ErrorCode.SERVER_ERROR, "No leader found while trying to register " + coreName + " with zookeeper");
       }
 

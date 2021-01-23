@@ -994,13 +994,13 @@ public class ZkStateReader implements SolrCloseable, Replica.NodeNameToBaseUrl {
       Slice slice = coll.getSlice(shard);
       if (slice != null) {
         Replica leader = slice.getLeader();
-        boolean valid;
+        boolean valid = false;
         try {
-          valid = mustBeLive ? isNodeLive(leader.getNodeName()) || zkClient.exists(COLLECTIONS_ZKNODE + "/" + collection + "/leaders/" + slice.getName() + "/leader") : isNodeLive(leader.getNodeName());
+          valid = mustBeLive ? leader != null && isNodeLive(leader.getNodeName()) || zkClient.exists(COLLECTIONS_ZKNODE + "/" + collection + "/leaders/" + slice.getName() + "/leader") : leader != null && isNodeLive(leader.getNodeName());
         } catch (KeeperException e) {
-          throw new SolrException(ErrorCode.SERVER_ERROR, e);
+
         } catch (InterruptedException e) {
-          throw new SolrException(ErrorCode.SERVER_ERROR, e);
+
         }
         if (leader != null && leader.getState() == Replica.State.ACTIVE && valid) {
           return leader;
@@ -1022,36 +1022,25 @@ public class ZkStateReader implements SolrCloseable, Replica.NodeNameToBaseUrl {
         Slice slice = c.getSlice(shard);
         if (slice == null) return false;
         Replica leader = slice.getLeader();
-
-        if (leader != null && leader.getState() == Replica.State.ACTIVE) {
-          boolean valid = false;
-          try {
-            valid = mustBeLive ?  isNodeLive(leader.getNodeName()) || zkClient.exists(COLLECTIONS_ZKNODE + "/" + collection + "/leaders/" + slice.getName()  + "/leader") : isNodeLive(leader.getNodeName());
-          } catch (KeeperException e) {
-            throw new SolrException(ErrorCode.SERVER_ERROR, e);
-          } catch (InterruptedException e) {
-            throw new SolrException(ErrorCode.SERVER_ERROR, e);
-          }
-          if (valid) {
-            returnLeader.set(leader);
-            return true;
-          }
+        boolean valid = false;
+        try {
+          valid = mustBeLive ?  (leader != null && isNodeLive(leader.getNodeName())) ||
+              zkClient.exists(COLLECTIONS_ZKNODE + "/" + collection + "/leaders/" + slice.getName()  + "/leader") :
+              leader != null && isNodeLive(leader.getNodeName());
+        } catch (KeeperException e) {
+          return false;
+        } catch (InterruptedException e) {
+          return false;
+        }
+        if (leader != null && leader.getState() == Replica.State.ACTIVE && valid) {
+          returnLeader.set(leader);
+          return true;
         }
         Collection<Replica> replicas = slice.getReplicas();
         for (Replica replica : replicas) {
-          if ("true".equals(replica.getProperty(LEADER_PROP)) && replica.getState() == Replica.State.ACTIVE) {
-            boolean valid = false;
-            try {
-              valid = mustBeLive ?  zkClient.exists(COLLECTIONS_ZKNODE + "/" + collection + "/leaders/" + slice.getName()  + "/leader") : isNodeLive(leader.getNodeName());
-            } catch (KeeperException e) {
-              throw new SolrException(ErrorCode.SERVER_ERROR, e);
-            } catch (InterruptedException e) {
-              throw new SolrException(ErrorCode.SERVER_ERROR, e);
-            }
-            if (valid) {
-              returnLeader.set(replica);
-              return true;
-            }
+          if ("true".equals(replica.getProperty(LEADER_PROP)) && replica.getState() == Replica.State.ACTIVE && valid) {
+            returnLeader.set(replica);
+            return true;
           }
         }
 
@@ -1991,9 +1980,10 @@ public class ZkStateReader implements SolrCloseable, Replica.NodeNameToBaseUrl {
     registerDocCollectionWatcher(collection, wrapper);
     registerLiveNodesListener(wrapper);
 
-//    DocCollection state = clusterState.getCollectionOrNull(collection);
-//
-//    removeCollectionStateWatcher(collection, stateWatcher);
+    DocCollection state = clusterState.getCollectionOrNull(collection);
+    if (stateWatcher.onStateChanged(liveNodes, state) == true) {
+      removeCollectionStateWatcher(collection, stateWatcher);
+    }
   }
 
   /**

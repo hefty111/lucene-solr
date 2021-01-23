@@ -104,22 +104,26 @@ public class SolrZooKeeper extends ZooKeeper {
   @Override
   public void close() {
     if (closeTracker != null) closeTracker.close();
+//    try {
+//      try {
+//        RequestHeader h = new RequestHeader();
+//        h.setType(ZooDefs.OpCode.closeSession);
+//
+//        cnxn.submitRequest(h, null, null, null);
+//      } catch (InterruptedException e) {
+//        // ignore, close the send/event threads
+//      } finally {
+//        ZooKeeperExposed zk = new ZooKeeperExposed(this, cnxn);
+//        zk.closeCnxn();
+//      }
+//    } catch (Exception e) {
+//      log.warn("Exception closing zookeeper client", e);
+//    }
     try {
-      try {
-        RequestHeader h = new RequestHeader();
-        h.setType(ZooDefs.OpCode.closeSession);
-
-        cnxn.submitRequest(h, null, null, null);
-      } catch (InterruptedException e) {
-        // ignore, close the send/event threads
-      } finally {
-        ZooKeeperExposed zk = new ZooKeeperExposed(this, cnxn);
-        zk.closeCnxn();
-      }
-    } catch (Exception e) {
-      log.warn("Exception closing zookeeper client", e);
+      super.close();
+    } catch (InterruptedException e) {
+      e.printStackTrace();
     }
-
   }
 
 }

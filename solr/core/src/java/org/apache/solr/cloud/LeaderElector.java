@@ -184,11 +184,11 @@ public class LeaderElector implements Closeable {
             oldWatcher.close();
           }
 
-          if ((zkController != null && zkController.getCoreContainer().isShutDown())) {
-            if (log.isDebugEnabled()) log.debug("Elector is closed, will not try and run leader processes");
-            state = OUT_OF_ELECTION;
-            return false;
-          }
+//          if ((zkController != null && zkController.getCoreContainer().isShutDown())) {
+//            if (log.isDebugEnabled()) log.debug("Elector is closed, will not try and run leader processes");
+//            state = OUT_OF_ELECTION;
+//            return false;
+//          }
 
           state = POT_LEADER;
           runIamLeaderProcess(context, replacement);
@@ -267,12 +267,12 @@ public class LeaderElector implements Closeable {
   // TODO: get this core param out of here
   protected void runIamLeaderProcess(final ElectionContext context, boolean weAreReplacement) throws KeeperException,
           InterruptedException, IOException {
-    if (state == CLOSED) {
-      throw new AlreadyClosedException();
-    }
-    if (state == LEADER) {
-      throw new IllegalStateException("Already in leader state");
-    }
+//    if (state == CLOSED) {
+//      throw new AlreadyClosedException();
+//    }
+//    if (state == LEADER) {
+//      throw new IllegalStateException("Already in leader state");
+//    }
 
     boolean success = context.runLeaderProcess(context, weAreReplacement, 0);
 
@@ -280,6 +280,7 @@ public class LeaderElector implements Closeable {
       state = LEADER;
     } else {
       state = OUT_OF_ELECTION;
+      throw new SolrException(SolrException.ErrorCode.SERVER_ERROR, "Failed becoming leader");
     }
   }
 
