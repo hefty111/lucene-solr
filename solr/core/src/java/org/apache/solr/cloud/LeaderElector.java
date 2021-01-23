@@ -237,8 +237,10 @@ public class LeaderElector implements Closeable {
             log.warn("Failed setting election watch, retrying {} {}", e.getClass().getName(), e.getMessage());
             state = OUT_OF_ELECTION;
             return true;
-          } catch (Exception e) {
+          } catch (AlreadyClosedException e) {
             state = OUT_OF_ELECTION;
+            return false;
+          } catch (Exception e) {
             // we couldn't set our watch for some other reason, retry
             log.error("Failed setting election watch {} {}", e.getClass().getName(), e.getMessage());
             state = OUT_OF_ELECTION;
@@ -252,7 +254,7 @@ public class LeaderElector implements Closeable {
         return true;
       } catch (AlreadyClosedException e) {
         state = OUT_OF_ELECTION;
-        return true;
+        return false;
       } catch (Exception e) {
         state = OUT_OF_ELECTION;
         return true;

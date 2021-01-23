@@ -218,6 +218,8 @@ class ShardLeaderElectionContextBase extends ElectionContext {
       zkClient.delete(leaderPath, -1);
 
       runLeaderProcess(context, weAreReplacement, pauseBeforeStartMs);
+    } catch (AlreadyClosedException e) {
+      throw e;
     } catch (Throwable t) {
       log.warn("Could not register as the leader because creating the ephemeral registration node in ZooKeeper failed: ", t);
       throw new SolrException(ErrorCode.SERVER_ERROR, "Could not register as the leader because creating the ephemeral registration node in ZooKeeper failed: " + errors, t);

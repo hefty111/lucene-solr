@@ -17,6 +17,7 @@
 
 package org.apache.solr.cloud;
 
+import org.apache.solr.common.AlreadyClosedException;
 import org.apache.solr.common.ParWork;
 import org.apache.solr.common.cloud.Replica;
 import org.apache.solr.common.cloud.SolrZkClient;
@@ -56,7 +57,7 @@ final class OverseerElectionContext extends ShardLeaderElectionContextBase {
 
     if (overseer.isDone()) {
       log.info("Already closed, bailing ...");
-      return false;
+      throw new AlreadyClosedException();
     }
 
     // TODO: the idea here is that we could clear the Overseer queue
