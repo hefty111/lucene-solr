@@ -573,6 +573,8 @@ public class LeaderElector implements Closeable {
       SolrZooKeeper zk = zkClient.getSolrZooKeeper();
       try {
         zk.removeWatches(watchedNode, this, WatcherType.Any, true);
+      } catch (KeeperException.NoWatcherException e) {
+
       } catch (Exception e) {
         log.info("could not remove watch {} {}", e.getClass().getSimpleName(), e.getMessage());
       }

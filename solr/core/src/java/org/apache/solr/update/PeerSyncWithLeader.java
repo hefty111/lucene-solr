@@ -171,7 +171,10 @@ public class PeerSyncWithLeader implements SolrMetricProducer {
 
       // now make sure that the starting updates overlap our updates
       // there shouldn't be reorders, so any overlap will do.
-      long smallestNewUpdate = Math.abs(ourUpdates.get(ourUpdates.size() - 1));
+      long smallestNewUpdate = 0;
+      if (ourUpdates.size() > 0) {
+        smallestNewUpdate = Math.abs(ourUpdates.get(ourUpdates.size() - 1));
+      }
 
       if (Math.abs(startingVersions.get(0)) < smallestNewUpdate) {
         log.warn("{} too many updates received since start - startingUpdates no longer overlaps with our currentUpdates", msg());
@@ -298,7 +301,7 @@ public class PeerSyncWithLeader implements SolrMetricProducer {
         // only DBI or DBQ in the gap (above) will satisfy this predicate
         return version > leaderFingerprint.getMaxVersionEncountered() && (oper == UpdateLog.DELETE || oper == UpdateLog.DELETE_BY_QUERY);
       });
-      log.info("existDBIOrDBQInTheGap={}", existDBIOrDBQInTheGap);
+      if (log.isDebugEnabled()) log.debug("existDBIOrDBQInTheGap={}", existDBIOrDBQInTheGap);
       if (!existDBIOrDBQInTheGap) {
         // it is safe to use leaderFingerprint.maxVersionEncountered as cut point now.
         updates.removeIf(e -> {
@@ -306,7 +309,7 @@ public class PeerSyncWithLeader implements SolrMetricProducer {
           List<Object> u = (List<Object>) e;
           long version = (Long) u.get(1);
           boolean success = version > leaderFingerprint.getMaxVersionEncountered();
-          log.info("existDBIOrDBQInTheGap version={}  leaderFingerprint.getMaxVersionEncountered={} success={}", version, leaderFingerprint.getMaxVersionEncountered(), success);
+          if (log.isDebugEnabled()) log.debug("existDBIOrDBQInTheGap version={}  leaderFingerprint.getMaxVersionEncountered={} success={}", version, leaderFingerprint.getMaxVersionEncountered(), success);
           return success;
         });
       }

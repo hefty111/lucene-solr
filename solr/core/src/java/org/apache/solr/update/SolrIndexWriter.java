@@ -112,12 +112,12 @@ public class SolrIndexWriter extends IndexWriter {
 //    return w;
 //  }
 
-  public static SolrIndexWriter buildIndexWriter(SolrCore core, String name, String path, DirectoryFactory directoryFactory, boolean create, IndexSchema schema, SolrIndexConfig config, IndexDeletionPolicy delPolicy, Codec codec) {
+  public static SolrIndexWriter buildIndexWriter(SolrCore core, String name, String path, DirectoryFactory directoryFactory, boolean create, IndexSchema schema, SolrIndexConfig config, IndexDeletionPolicy delPolicy, Codec codec, boolean commitOnClose) {
     SolrIndexWriter iw = null;
     Directory dir = null;
     try {
       dir = getDir(directoryFactory, path, config);
-      iw = new SolrIndexWriter(core, name, directoryFactory, dir, create, schema, config, delPolicy, codec);
+      iw = new SolrIndexWriter(core, name, directoryFactory, dir, create, schema, config, delPolicy, codec, commitOnClose);
     } catch (Throwable e) {
       ParWork.propagateInterrupt(e);
       SolrException exp = new SolrException(SolrException.ErrorCode.SERVER_ERROR, e);
@@ -170,11 +170,11 @@ public class SolrIndexWriter extends IndexWriter {
     assert ObjectReleaseTracker.track(this);
   }
 
-  public SolrIndexWriter(SolrCore core, String name, DirectoryFactory directoryFactory, Directory directory, boolean create, IndexSchema schema, SolrIndexConfig config, IndexDeletionPolicy delPolicy, Codec codec) throws IOException {
+  public SolrIndexWriter(SolrCore core, String name, DirectoryFactory directoryFactory, Directory directory, boolean create, IndexSchema schema, SolrIndexConfig config, IndexDeletionPolicy delPolicy, Codec codec, boolean commitOnClose) throws IOException {
     super(directory,
             config.toIndexWriterConfig(core).
                     setOpenMode(create ? IndexWriterConfig.OpenMode.CREATE : IndexWriterConfig.OpenMode.APPEND).
-                    setIndexDeletionPolicy(delPolicy).setCodec(codec)
+                    setIndexDeletionPolicy(delPolicy).setCodec(codec).setCommitOnClose(commitOnClose)
     );
     try {
     if (log.isDebugEnabled()) log.debug("Opened Writer " + name);

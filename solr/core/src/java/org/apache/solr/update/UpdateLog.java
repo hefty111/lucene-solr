@@ -1596,25 +1596,27 @@ public class UpdateLog implements PluginInfoInitialized, SolrMetricProducer {
           if(Math.abs(ptr.version) > Math.abs(maxVersion)) continue;
           if (ptr.version != 0) {
             ret.add(ptr.version);
+          } else {
+            log.warn("Found version of 0 {} {} {}", ptr.pointer, ptr.previousVersion, ptr.log);
           }
           if (--n <= 0) return ret;
         }
       }
-      log.info("Return getVersions {} {}", n, ret);
+      if (log.isDebugEnabled()) log.debug("Return getVersions {} {}", n, ret);
 
       return ret;
     }
 
     public Object lookup(long version) {
-      log.info("lookup {}", version);
+      if (log.isDebugEnabled()) log.debug("lookup {}", version);
       Update update = updates.get(version);
       if (update == null) return null;
 
-      log.info("found update from updates {} {}", update.version, updates.size());
+      if (log.isDebugEnabled()) log.debug("found update from updates {} {}", update.version, updates.size());
 
       Object object = update.log.lookup(update.pointer);
 
-      log.info("found update from log {} {} ptr={} object={}", update.version, update.log, update.pointer, object);
+      if (log.isDebugEnabled()) log.debug("found update from log {} {} ptr={} object={}", update.version, update.log, update.pointer, object);
 
       return object;
     }
@@ -1704,7 +1706,7 @@ public class UpdateLog implements PluginInfoInitialized, SolrMetricProducer {
             numUpdates++;
           }
 
-          log.info("Recent updates updates numUpdates={} numUpdatesToKeep={}", numUpdates, numRecordsToKeep);
+          if (log.isDebugEnabled()) log.debug("Recent updates updates numUpdates={} numUpdatesToKeep={}", numUpdates, numRecordsToKeep);
 
         } catch (IOException | AssertionError e) { // catch AssertionError to handle certain test failures correctly
           // failure to read a log record isn't fatal

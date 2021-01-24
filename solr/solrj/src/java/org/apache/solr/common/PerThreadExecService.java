@@ -206,22 +206,20 @@ public class PerThreadExecService extends AbstractExecutorService {
     return maxSize;
   }
 
-  public boolean checkLoad() {
+  private boolean checkLoad() {
 
-    double ourLoad = ParWork.getSysStats().getTotalUsage();
-    if (ourLoad > SysStats.OUR_LOAD_HIGH) {
-      if (log.isDebugEnabled()) log.debug("Our cpu usage is too high, run in caller thread {}", ourLoad);
+    double sLoad = sysStats.getSystemLoad();
+
+    if (hiStateLoad(sLoad)) {
       return false;
-    } else {
-      double sLoad = sysStats.getSystemLoad();
-      if (sLoad > 1) {
-        if (log.isDebugEnabled()) log.debug("System load is too high, run in caller thread {}", sLoad);
-        return false;
-      }
     }
     return true;
   }
-  
+
+  private boolean hiStateLoad(double sLoad) {
+    return sLoad > 0.8d && running.get() > 3;
+  }
+
   public void closeLock(boolean lock) {
     if (lock) {
       closeTracker.enableCloseLock();

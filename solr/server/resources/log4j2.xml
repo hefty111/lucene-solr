@@ -39,9 +39,9 @@
       </PatternLayout>
       <Policies>
         <OnStartupTriggeringPolicy />
-        <SizeBasedTriggeringPolicy size="32 MB"/>
+        <SizeBasedTriggeringPolicy size="64 MB"/>
       </Policies>
-      <DefaultRolloverStrategy max="10"/>
+      <DefaultRolloverStrategy max="20"/>
     </RollingRandomAccessFile>
 
     <RollingRandomAccessFile

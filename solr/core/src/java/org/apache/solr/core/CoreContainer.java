@@ -25,7 +25,6 @@ import org.apache.http.config.Lookup;
 import org.apache.lucene.index.CorruptIndexException;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.search.IndexSearcher;
-import org.apache.lucene.store.Directory;
 import org.apache.solr.client.solrj.SolrClient;
 import org.apache.solr.client.solrj.cloud.SolrCloudManager;
 import org.apache.solr.client.solrj.impl.CloudHttp2SolrClient;
@@ -40,7 +39,6 @@ import org.apache.solr.cloud.ZkController;
 import org.apache.solr.cloud.overseer.OverseerAction;
 import org.apache.solr.common.AlreadyClosedException;
 import org.apache.solr.common.ParWork;
-import org.apache.solr.common.PerThreadExecService;
 import org.apache.solr.common.SolrException;
 import org.apache.solr.common.SolrException.ErrorCode;
 import org.apache.solr.common.cloud.DocCollection;
@@ -55,13 +53,12 @@ import org.apache.solr.common.util.IOUtils;
 import org.apache.solr.common.util.ObjectCache;
 import org.apache.solr.common.util.ObjectReleaseTracker;
 import org.apache.solr.common.util.OrderedExecutor;
+import org.apache.solr.common.util.SysStats;
 import org.apache.solr.common.util.Utils;
-import org.apache.solr.core.DirectoryFactory.DirContext;
 import org.apache.solr.core.backup.repository.BackupRepository;
 import org.apache.solr.core.backup.repository.BackupRepositoryFactory;
 import org.apache.solr.filestore.PackageStoreAPI;
 import org.apache.solr.handler.RequestHandlerBase;
-import org.apache.solr.handler.SnapShooter;
 import org.apache.solr.handler.admin.CollectionsHandler;
 import org.apache.solr.handler.admin.ConfigSetsHandler;
 import org.apache.solr.handler.admin.CoreAdminHandler;
@@ -125,12 +122,10 @@ import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.spec.InvalidKeySpecException;
-import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Comparator;
-import java.util.Date;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -193,9 +188,7 @@ public class CoreContainer implements Closeable {
 
   private volatile UpdateShardHandler updateShardHandler;
 
-  public volatile ExecutorService solrCoreLoadExecutor;
-
-  public volatile ExecutorService solrCoreCloseExecutor;
+  public volatile ExecutorService solrCoreExecutor;
 
   private final OrderedExecutor replayUpdatesExecutor;
 
@@ -404,11 +397,8 @@ public class CoreContainer implements Closeable {
 
     containerProperties.putAll(cfg.getSolrProperties());
 
-    solrCoreLoadExecutor = new PerThreadExecService(ParWork.getRootSharedExecutor(), Math.max(16, Runtime.getRuntime().availableProcessors()),
-        false, false);
-
-    solrCoreCloseExecutor = new PerThreadExecService(ParWork.getRootSharedExecutor(), Math.max(16, Runtime.getRuntime().availableProcessors()),
-        false, false);
+    solrCoreExecutor = ParWork.getParExecutorService("SolrCoreExecutor",
+        1, SysStats.PROC_COUNT * 2, 3000, new LinkedBlockingQueue<>(1024));
   }
 
   @SuppressWarnings({"unchecked"})
@@ -903,7 +893,7 @@ public class CoreContainer implements Closeable {
       }
       if (cd.isLoadOnStartup()) {
 
-        coreLoadFutures.add(solrCoreLoadExecutor.submit(() -> {
+        coreLoadFutures.add(solrCoreExecutor.submit(() -> {
           SolrCore core = null;
           MDCLoggingContext.setCoreDescriptor(this, cd);
           try {
@@ -1075,10 +1065,6 @@ public class CoreContainer implements Closeable {
         replayUpdatesExecutor.shutdownAndAwaitTermination();
       });
 
-      if (solrCoreLoadExecutor != null) {
-        solrCoreLoadExecutor.shutdown();
-      }
-
       List<Callable<?>> callables = new ArrayList<>();
 
       if (metricManager != null) {
@@ -1146,12 +1132,7 @@ public class CoreContainer implements Closeable {
       closer.collect(callables);
       closer.collect(metricsHistoryHandler);
 
-
-      closer.collect(solrCoreLoadExecutor);
-
-
       closer.collect("WaitForSolrCores", solrCores);
-
 
       closer.addCollect();
 
@@ -1159,7 +1140,7 @@ public class CoreContainer implements Closeable {
       closer.collect(updateShardHandler);
 
 
-      closer.collect(solrCoreCloseExecutor);
+      closer.collect(solrCoreExecutor);
       closer.collect(solrClientCache);
 
       closer.collect(loader);
@@ -1415,7 +1396,7 @@ public class CoreContainer implements Closeable {
               zkSys.getZkController().throwErrorIfReplicaReplaced(dcore);
             }
           }
-          new ZkController.RegisterCoreAsync(zkSys.zkController, dcore, false).call();
+          ParWork.getRootSharedExecutor().submit(new ZkController.RegisterCoreAsync(zkSys.zkController, dcore, false));
         }
 
       } catch (Exception e) {
@@ -1459,11 +1440,11 @@ public class CoreContainer implements Closeable {
             if (core != null) {
 
               SolrCore finalCore1 = core;
-              solrCoreCloseExecutor.submit(() -> {
+              solrCoreExecutor.submit(() -> {
                 finalCore1.closeAndWait();
               });
               SolrCore finalOld = old;
-              solrCoreCloseExecutor.submit(() -> {
+              solrCoreExecutor.submit(() -> {
                 if (finalOld != null) {
                   finalOld.closeAndWait();
                 }
@@ -1511,6 +1492,10 @@ public class CoreContainer implements Closeable {
   private SolrCore processCoreCreateException(Exception original, CoreDescriptor dcore, ConfigSet coreConfig) {
     log.error("Error creating SolrCore", original);
 
+    if (isShutDown) {
+      return null;
+    }
+
     // Traverse full chain since CIE may not be root exception
     Throwable cause = original;
     if (!(cause instanceof  CorruptIndexException)) {
@@ -1544,10 +1529,31 @@ public class CoreContainer implements Closeable {
                 .getLeader();
             if (leader != null && leader.getState() == State.ACTIVE) {
               log.info("Found active leader, will attempt to create fresh core and recover.");
-              resetIndexDirectory(dcore, coreConfig);
+
+              SolrConfig config = coreConfig.getSolrConfig();
+
+              String registryName = SolrMetricManager.getRegistryName(SolrInfoBean.Group.core, dcore.getName());
+              DirectoryFactory df = DirectoryFactory.loadDirectoryFactory(config, this, registryName);
+              String dataDir = SolrCore.findDataDir(df, null, config, dcore);
+              df.close();
+
+              try {
+                while (new File(dataDir).exists()) {
+                  try {
+                    Files.walk(new File(dataDir).toPath()).sorted(Comparator.reverseOrder()).map(Path::toFile).forEach(File::delete);
+                  } catch (NoSuchFileException e) {
+
+                  }
+                }
+              } catch (Exception e) {
+                SolrException.log(log, "Failed to delete instance dir for core:" + dcore.getName() + " dir:" + dcore.getInstanceDir());
+              }
+
+              SolrCore core = new SolrCore(this, dcore, coreConfig);
+              core.getUpdateHandler().getUpdateLog().deleteAll();
+
               // the index of this core is emptied, its term should be set to 0
               getZkController().getShardTerms(desc.getCollectionName(), desc.getShardId()).setTermToZero(dcore.getName());
-              return new SolrCore(this, dcore, coreConfig);
             }
           } catch (Exception se) {
             se.addSuppressed(original);
@@ -1577,35 +1583,6 @@ public class CoreContainer implements Closeable {
         } else {
           throw new SolrException(ErrorCode.SERVER_ERROR, original);
         }
-    }
-  }
-
-  /**
-   * Write a new index directory for the a SolrCore, but do so without loading it.
-   */
-  private void resetIndexDirectory(CoreDescriptor dcore, ConfigSet coreConfig) {
-    SolrConfig config = coreConfig.getSolrConfig();
-
-    String registryName = SolrMetricManager.getRegistryName(SolrInfoBean.Group.core, dcore.getName());
-    DirectoryFactory df = DirectoryFactory.loadDirectoryFactory(config, this, registryName);
-    String dataDir = SolrCore.findDataDir(df, null, config, dcore);
-
-    String tmpIdxDirName = "index." + new SimpleDateFormat(SnapShooter.DATE_FMT, Locale.ROOT).format(new Date());
-    SolrCore.modifyIndexProps(df, dataDir, config, tmpIdxDirName);
-
-    // Free the directory object that we had to create for this
-    Directory dir = null;
-    try {
-      dir = df.get(dataDir, DirContext.META_DATA, config.indexConfig.lockType);
-    } catch (IOException e) {
-      throw new SolrException(SolrException.ErrorCode.SERVER_ERROR, e);
-    } finally {
-      try {
-        df.doneWithDirectory(dir);
-        df.release(dir);
-      } catch (IOException e) {
-        SolrException.log(log, e);
-      }
     }
   }
 
@@ -1821,7 +1798,7 @@ public class CoreContainer implements Closeable {
           if (!success) {
             log.error("Failed reloading core, cleaning up new core");
             SolrCore finalNewCore = newCore;
-            solrCoreCloseExecutor.submit(() -> {
+            solrCoreExecutor.submit(() -> {
               //            try {
               if (finalNewCore != null) {
                 log.error("Closing failed new core");

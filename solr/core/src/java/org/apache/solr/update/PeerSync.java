@@ -140,6 +140,7 @@ public class PeerSync implements SolrMetricProducer {
   }
 
   public static long percentile(List<Long> arr, float frac) {
+    if (arr.size() == 0) return 0;
     int elem = (int) (arr.size() * frac);
     return Math.abs(arr.get(elem));
   }
@@ -206,25 +207,8 @@ public class PeerSync implements SolrMetricProducer {
         // we have no versions and hence no frame of reference to tell if we can use a peers
         // updates to bring us into sync
 
-        log.info("{} DONE. We have no versions. sync failed.", msg());
+        return failOnNoVersions();
 
-        for (;;)  {
-          if (log.isDebugEnabled()) log.debug("looping in check for versions on others");
-          ShardResponse srsp = shardHandler.takeCompletedIncludingErrors();
-          if (srsp == null) break;
-          if (srsp.getException() == null)  {
-            if (log.isDebugEnabled()) log.debug("checking if others have versions {} {}", srsp.getSolrResponse().getResponse());
-            List<Long> otherVersions = (List<Long>)srsp.getSolrResponse().getResponse().get("versions");
-            if (otherVersions != null && !otherVersions.isEmpty())  {
-              if (syncErrors != null) syncErrors.inc();
-              if (log.isDebugEnabled()) log.debug("found another replica with versions");
-              return PeerSyncResult.failure(true);
-            }
-          }
-        }
-        if (syncErrors != null) syncErrors.inc();
-        if (log.isDebugEnabled()) log.debug("found no other replica with versions");
-        return PeerSyncResult.failure(false);
       }
 
       MissedUpdatesFinder missedUpdatesFinder = new MissedUpdatesFinder(ourUpdates, msg(), nUpdates, ourLowThreshold, ourHighThreshold);
@@ -263,6 +247,27 @@ public class PeerSync implements SolrMetricProducer {
         timerContext.close();
       }
     }
+  }
+
+  private PeerSyncResult failOnNoVersions() {
+    log.info("{} DONE. We have no versions. sync failed.", msg());
+
+    for (;;)  {
+      ShardResponse srsp = shardHandler.takeCompletedIncludingErrors();
+      if (srsp == null) break;
+      if (srsp.getException() == null)  {
+        if (log.isDebugEnabled()) log.debug("checking if others have versions {} {}", srsp.getSolrResponse().getResponse());
+        List<Long> otherVersions = (List<Long>)srsp.getSolrResponse().getResponse().get("versions");
+        if (otherVersions != null && !otherVersions.isEmpty())  {
+          if (syncErrors != null) syncErrors.inc();
+          if (log.isDebugEnabled()) log.debug("found another replica with versions");
+          return PeerSyncResult.failure(true);
+        }
+      }
+    }
+    if (syncErrors != null) syncErrors.inc();
+    if (log.isDebugEnabled()) log.debug("found no other replica with versions");
+    return PeerSyncResult.failure(false);
   }
 
   /**
@@ -406,31 +411,6 @@ public class PeerSync implements SolrMetricProducer {
     }
   }
 
-  private boolean canHandleVersionRanges(String replica) {
-    SyncShardRequest sreq = new SyncShardRequest();
-    requests.add(sreq);
-
-    // determine if leader can handle version ranges
-    sreq.shards = new String[] {replica};
-    sreq.actualShards = sreq.shards;
-    sreq.params = new ModifiableSolrParams();
-    sreq.params.set("qt", "/get");
-    sreq.params.set(DISTRIB, false);
-    sreq.params.set("checkCanHandleVersionRanges", false);
-
-    ShardHandler sh = shardHandlerFactory.getShardHandler();
-    sh.submit(sreq, replica, sreq.params);
-
-    ShardResponse srsp = sh.takeCompletedIncludingErrors();
-    Boolean canHandleVersionRanges = srsp.getSolrResponse().getResponse().getBooleanArg("canHandleVersionRanges");
-
-    if (canHandleVersionRanges == null || canHandleVersionRanges.booleanValue() == false) {
-      return false;
-    }
-
-    return true;
-  }
-
   private boolean handleVersions(ShardResponse srsp, MissedUpdatesFinder missedUpdatesFinder) {
     // we retrieved the last N updates from the replica
     @SuppressWarnings({"unchecked"})
@@ -440,8 +420,8 @@ public class PeerSync implements SolrMetricProducer {
     SyncShardRequest sreq = (SyncShardRequest) srsp.getShardRequest();
     Object fingerprint = srsp.getSolrResponse().getResponse().get("fingerprint");
 
-    if (log.isInfoEnabled()) {
-      log.info("{} Received {} versions from {} {} fingerprint:{}", msg(), otherVersions.size(), otherVersions, sreq.shards[0], fingerprint);
+    if (log.isDebugEnabled()) {
+      log.debug("{} Received {} versions from {} {} fingerprint:{}", msg(), otherVersions.size(), otherVersions, sreq.shards[0], fingerprint);
     }
     if (fingerprint != null) {
       sreq.fingerprint = IndexFingerprint.fromObject(fingerprint);
@@ -454,7 +434,7 @@ public class PeerSync implements SolrMetricProducer {
     
     MissedUpdatesRequest updatesRequest = missedUpdatesFinder.find(
         otherVersions, sreq.shards[0],
-        () -> core.getSolrConfig().useRangeVersionsForPeerSync && canHandleVersionRanges(sreq.shards[0]));
+        () -> core.getSolrConfig().useRangeVersionsForPeerSync);
 
     if (updatesRequest == MissedUpdatesRequest.ALREADY_IN_SYNC) {
       return true;

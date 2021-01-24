@@ -1904,7 +1904,7 @@ if [ -z ${GC_LOG_OPTS+x} ]; then
                  '-XX:+PrintGCDateStamps' '-XX:+PrintGCTimeStamps' '-XX:+PrintTenuringDistribution' \
                  '-XX:+PrintGCApplicationStoppedTime')
   else
-    GC_LOG_OPTS=('-Xlog:gc*')
+    GC_LOG_OPTS=('')
   fi
 else
   GC_LOG_OPTS=($GC_LOG_OPTS)

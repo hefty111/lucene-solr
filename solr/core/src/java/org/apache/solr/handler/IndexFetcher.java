@@ -18,6 +18,7 @@ package org.apache.solr.handler;
 
 import com.google.common.base.Strings;
 import org.apache.lucene.codecs.CodecUtil;
+import org.apache.lucene.index.CorruptIndexException;
 import org.apache.lucene.index.IndexCommit;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.SegmentInfos;
@@ -520,7 +521,7 @@ public class IndexFetcher {
       }
 
       // Create the sync service
-      fsyncService = ParWork.getExecutorService(15);
+      fsyncService = ParWork.getExecutorService(4);
       // use a synchronized list because the list is read by other threads (to show details)
       filesDownloaded = Collections.synchronizedList(new ArrayList<Map<String, Object>>());
       // if the generation of master is older than that of the slave , it means they are not compatible to be copied
@@ -724,7 +725,7 @@ public class IndexFetcher {
     ZkController zkController = solrCore.getCoreContainer().getZkController();
     CloudDescriptor cd = solrCore.getCoreDescriptor().getCloudDescriptor();
     Replica leaderReplica = zkController.getZkStateReader().getLeaderRetry(
-        cd.getCollectionName(), cd.getShardId(), 1500, false);
+        cd.getCollectionName(), cd.getShardId(), 3000, false);
     return leaderReplica;
   }
 
@@ -1055,7 +1056,7 @@ public class IndexFetcher {
       log.warn("WARNING: clearing disk space ahead of time to avoid running out of space, could cause problems with current SolrCore approxTotalSpaceReqd{}, usableSpace={}", atsr, usableSpace);
       deleteFilesInAdvance(indexDir, indexDirPath, totalSpaceRequired, usableSpace);
     }
-    log.info("Files to download {}", filesToDownload);
+    if (log.isDebugEnabled()) log.debug("Files to download {}", filesToDownload);
     try {
       // nocommit
       try (ParWork parWork = new ParWork(this, true)) {
@@ -1113,7 +1114,7 @@ public class IndexFetcher {
               if (stop) {
                 throw new AlreadyClosedException();
               }
-              log.info("Downloaded {}", tmpIndexDir, file.get(NAME));
+              if (log.isDebugEnabled()) log.debug("Downloaded {}", tmpIndexDir, file.get(NAME));
               filesDownloaded.add(Collections.unmodifiableMap(file));
             } else {
               if (log.isDebugEnabled()) {
@@ -1231,8 +1232,13 @@ public class IndexFetcher {
           try {
             indexFileChecksum = CodecUtil.retrieveChecksum(indexInput);
             compareResult.checkSummed = true;
+          } catch (CorruptIndexException e) {
+            log.warn("Could not retrieve checksum from file.", e);
+            compareResult.equal = false;
+            return compareResult;
           } catch (Exception e) {
             log.warn("Could not retrieve checksum from file.", e);
+            compareResult.equal = false;
           }
         }
 
@@ -1722,7 +1728,6 @@ public class IndexFetcher {
         //if cleanup succeeds . The file is downloaded fully
         fsyncServiceFuture = fsyncService.submit(() -> {
           try {
-            log.info("Close fetched file", file);
             file.close();
           } catch (Exception e) {
             fsyncException = e;

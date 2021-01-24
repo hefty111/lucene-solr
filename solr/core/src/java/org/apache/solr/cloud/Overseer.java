@@ -30,6 +30,7 @@ import org.apache.solr.cloud.overseer.OverseerAction;
 import org.apache.solr.cloud.overseer.ZkStateWriter;
 import org.apache.solr.common.AlreadyClosedException;
 import org.apache.solr.common.ParWork;
+import org.apache.solr.common.ParWorkExecutor;
 import org.apache.solr.common.SolrCloseable;
 import org.apache.solr.common.SolrException;
 import org.apache.solr.common.SolrThread;
@@ -45,6 +46,7 @@ import org.apache.solr.common.util.IOUtils;
 import org.apache.solr.common.util.NamedList;
 import org.apache.solr.common.util.ObjectReleaseTracker;
 import org.apache.solr.common.util.Pair;
+import org.apache.solr.common.util.SysStats;
 import org.apache.solr.core.CloudConfig;
 import org.apache.solr.core.CoreContainer;
 import org.apache.solr.handler.admin.CollectionsHandler;
@@ -53,7 +55,6 @@ import org.apache.solr.update.UpdateShardHandler;
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.WatchedEvent;
 import org.apache.zookeeper.Watcher;
-import org.apache.zookeeper.data.Stat;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -71,7 +72,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiConsumer;
 
@@ -158,7 +160,7 @@ public class Overseer implements SolrCloseable {
   private volatile boolean initedHttpClient = false;
   private volatile QueueWatcher queueWatcher;
   private volatile WorkQueueWatcher.CollectionWorkQueueWatcher collectionQueueWatcher;
-  private volatile ExecutorService taskExecutor;
+  private volatile ParWorkExecutor taskExecutor;
 
   public boolean isDone() {
     return closeAndDone;
@@ -285,14 +287,10 @@ public class Overseer implements SolrCloseable {
 //
 //     stateManagmentExecutor = ParWork.getParExecutorService("stateManagmentExecutor",
 //        1, 1, 3000, new SynchronousQueue());
-     taskExecutor = ParWork.getParExecutorService("overseerTaskExecutor",
-        3, 32, 1000, new SynchronousQueue());
+     taskExecutor = (ParWorkExecutor) ParWork.getParExecutorService("overseerTaskExecutor",
+         SysStats.PROC_COUNT, SysStats.PROC_COUNT * 2, 3000, new LinkedBlockingQueue<>(1024));
+     taskExecutor.prestartAllCoreThreads();
 
-//    try {
-//      if (context != null) context.close();
-//    } catch (Exception e) {
-//      log.error("", e);
-//    }
     if (overseerOnlyClient == null && !closeAndDone && !initedHttpClient) {
       overseerOnlyClient = new Http2SolrClient.Builder().idleTimeout(60000).connectionTimeout(5000).markInternalRequest().build();
       overseerOnlyClient.enableCloseLock();
@@ -336,7 +334,7 @@ public class Overseer implements SolrCloseable {
     ThreadGroup ccTg = new ThreadGroup("Overseer collection creation process.");
 
 
-    this.zkStateWriter = new ZkStateWriter(zkController.getZkStateReader(), stats);
+    this.zkStateWriter = new ZkStateWriter(zkController.getZkStateReader(), stats, this);
     //systemCollectionCompatCheck(new StringBiConsumer());
 
     queueWatcher = new WorkQueueWatcher(getCoreContainer());
@@ -538,7 +536,10 @@ public class Overseer implements SolrCloseable {
       }
 
       if (taskExecutor != null) {
-        taskExecutor.shutdownNow();
+        try {
+          taskExecutor.awaitTermination(5000, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+        }
       }
 
     }
@@ -813,6 +814,8 @@ public class Overseer implements SolrCloseable {
         this.closed = true;
         try {
           zkController.getZkClient().getSolrZooKeeper().removeWatches(path, this, WatcherType.Data, true);
+        } catch (KeeperException.NoWatcherException e) {
+
         } catch (Exception e) {
           log.info("could not remove watch {} {}", e.getClass().getSimpleName(), e.getMessage());
         }

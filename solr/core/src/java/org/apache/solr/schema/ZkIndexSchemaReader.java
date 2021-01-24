@@ -132,6 +132,8 @@ public class ZkIndexSchemaReader implements OnReconnect {
     public void close() throws IOException {
       try {
         schemaReader.zkClient.getSolrZooKeeper().removeWatches(schemaReader.managedSchemaPath, this, WatcherType.Any, true);
+      } catch (KeeperException.NoWatcherException e) {
+
       } catch (Exception e) {
         if (log.isDebugEnabled()) log.debug("could not remove watch {} {}", e.getClass().getSimpleName(), e.getMessage());
       }

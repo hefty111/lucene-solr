@@ -56,6 +56,7 @@ public class ZkStateWriter {
 
   private static final Logger log = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
   private final ZkStateReader reader;
+  private final Overseer overseer;
 
   /**
    * Represents a no-op {@link ZkWriteCommand} which will result in no modification to cluster state
@@ -85,9 +86,9 @@ public class ZkStateWriter {
   private Set<String> dirtyStructure = new HashSet<>();
   private Set<String> dirtyState = new HashSet<>();
 
-  public ZkStateWriter(ZkStateReader zkStateReader, Stats stats) {
+  public ZkStateWriter(ZkStateReader zkStateReader, Stats stats, Overseer overseer) {
     assert zkStateReader != null;
-
+    this.overseer = overseer;
     this.reader = zkStateReader;
     this.stats = stats;
 
@@ -225,7 +226,7 @@ public class ZkStateWriter {
                   List<Replica> replicas = docColl.getReplicas();
                   for (Replica replica : replicas) {
                     if (replica.getState() != Replica.State.DOWN && replica.getNodeName().equals(entry.getValue())) {
-                      log.info("set downnode for replica {}", replica);
+                      if (log.isDebugEnabled()) log.debug("set downnode for replica {}", replica);
                       // nocommit
                       Slice slice = docColl.getSlice(replica.getSlice());
                       slice.setLeader(null);
@@ -297,6 +298,7 @@ public class ZkStateWriter {
                         docColl.getSlice(replica).setLeader(null);
                       }
                       updates.getProperties().put(replica.getName(), Replica.State.getShortState(state));
+                      updates.getProperties().remove("leader");
                       // log.info("set state {} {}", state, replica);
                       replica.setState(state);
                       dirtyState.add(collection);
@@ -352,130 +354,154 @@ public class ZkStateWriter {
   // if additional updates too large, publish structure changew
   public void writePendingUpdates() {
 
-   // writeLock.lock();
-   // try {
-   //   log.info("Get our write lock");
-      ourLock.lock();
+    do {
       try {
-   //     log.info("Got our write lock");
+        write();
+      } catch (KeeperException.BadVersionException e) {
+        continue;
+      }
+      break;
+    } while (!overseer.isClosed());
 
-        throttle.minimumWaitBetweenActions();
-        throttle.markAttemptingAction();
+  }
 
-        if (log.isTraceEnabled()) {
-          log.trace("writePendingUpdates {}", cs);
-        }
+  private void write() throws KeeperException.BadVersionException {
+    // writeLock.lock();
+    // try {
+    //   log.info("Get our write lock");
+    ourLock.lock();
+    try {
+ //     log.info("Got our write lock");
 
-        if (failedUpdates.size() > 0) {
-          log.warn("Some collection updates failed {} logging last exception", failedUpdates, lastFailedException); // nocommit expand
-          failedUpdates.clear();
-          throw new SolrException(SolrException.ErrorCode.SERVER_ERROR, lastFailedException.get());
-        }
+      throttle.minimumWaitBetweenActions();
+      throttle.markAttemptingAction();
+
+      if (log.isTraceEnabled()) {
+        log.trace("writePendingUpdates {}", cs);
+      }
+
+      if (failedUpdates.size() > 0) {
+        log.warn("Some collection updates failed {} logging last exception", failedUpdates, lastFailedException); // nocommit expand
+        failedUpdates.clear();
+        throw new SolrException(SolrException.ErrorCode.SERVER_ERROR, lastFailedException.get());
+      }
 //      } finally {
 //        ourLock.unlock();
 //      }
 
-      // wait to see our last publish version has propagated TODO don't wait on collections not hosted on overseer?
-      // waitForStateWePublishedToComeBack();
+    // wait to see our last publish version has propagated TODO don't wait on collections not hosted on overseer?
+    // waitForStateWePublishedToComeBack();
 
-   //   ourLock.lock();
-      AtomicInteger lastVersion = new AtomicInteger();
-      //log.info("writing out state, looking at collections count={} toWrite={} {} : {}", cs.getCollectionsMap().size(), collectionsToWrite.size(), cs.getCollectionsMap().keySet(), collectionsToWrite);
-      //try {
-        cs.forEachCollection(collection -> {
-         // log.info("check collection {}", collection);
-          if (dirtyStructure.contains(collection.getName()) || dirtyState.contains(collection.getName())) {
-          //  log.info("process collection {}", collection);
-            String name = collection.getName();
-            String path = ZkStateReader.getCollectionPath(collection.getName());
-            String pathSCN = ZkStateReader.getCollectionSCNPath(collection.getName());
-           // log.info("process collection {} path {}", collection.getName(), path);
-            Stat existsStat = null;
-            if (log.isTraceEnabled()) log.trace("process {}", collection);
+ //   ourLock.lock();
+    AtomicInteger lastVersion = new AtomicInteger();
+    AtomicReference<KeeperException.BadVersionException> badVersionException = new AtomicReference();
+    //log.info("writing out state, looking at collections count={} toWrite={} {} : {}", cs.getCollectionsMap().size(), collectionsToWrite.size(), cs.getCollectionsMap().keySet(), collectionsToWrite);
+    //try {
+      cs.forEachCollection(collection -> {
+       // log.info("check collection {}", collection);
+        Integer version = null;
+        if (dirtyStructure.contains(collection.getName()) || dirtyState.contains(collection.getName())) {
+        //  log.info("process collection {}", collection);
+          String name = collection.getName();
+          String path = ZkStateReader.getCollectionPath(collection.getName());
+          String pathSCN = ZkStateReader.getCollectionSCNPath(collection.getName());
+         // log.info("process collection {} path {}", collection.getName(), path);
+          Stat existsStat = null;
+          if (log.isTraceEnabled()) log.trace("process {}", collection);
+          try {
+           // log.info("get data for {}", name);
+            byte[] data = Utils.toJSON(singletonMap(name, collection));
+          //  log.info("got data for {} {}", name, data.length);
+
             try {
-             // log.info("get data for {}", name);
-              byte[] data = Utils.toJSON(singletonMap(name, collection));
-            //  log.info("got data for {} {}", name, data.length);
+              Integer v = trackVersions.get(collection.getName());
 
-              try {
-                Integer version = null;
-                Integer v = trackVersions.get(collection.getName());
-
-                if (v != null) {
-                  //log.info("got version from cache {}", v);
-                  version = v;
-                } else {
-                  version = 0;
-                }
-                lastVersion.set(version);
-                if (log.isDebugEnabled()) log.debug("Write state.json prevVersion={} bytes={} col={}", version, data.length, collection);
-
-                reader.getZkClient().setData(path, data, version, true);
-                trackVersions.put(collection.getName(), version + 1);
-                if (dirtyStructure.contains(collection.getName())) {
-                  if (log.isDebugEnabled()) log.debug("structure change in {}", collection.getName());
-                  dirtyStructure.remove(collection.getName());
-                  reader.getZkClient().setData(pathSCN, null, -1, true);
-
-                  ZkNodeProps updates = stateUpdates.get(collection.getName());
-                  if (updates != null) {
-                    updates.getProperties().clear();
-                  }
-                }
-
-              } catch (KeeperException.NoNodeException e) {
-                if (log.isDebugEnabled()) log.debug("No node found for state.json", e);
-
-                lastVersion.set(-1);
-              //  trackVersions.remove(collection.getName());
-                // likely deleted
-                return;
-
-              } catch (KeeperException.BadVersionException bve) {
-                //lastFailedException.set(bve);
-                //failedUpdates.put(collection.getName(), collection);
-               // Stat estate = reader.getZkClient().exists(path, null);
-                trackVersions.remove(collection.getName());
-                throw bve;
-
+              if (v != null) {
+                //log.info("got version from cache {}", v);
+                version = v;
+              } else {
+                version = 0;
               }
+              lastVersion.set(version);
+              if (log.isDebugEnabled()) log.debug("Write state.json prevVersion={} bytes={} col={}", version, data.length, collection);
 
-              if (dirtyState.contains(collection.getName())) {
+              reader.getZkClient().setData(path, data, version, true);
+              trackVersions.put(collection.getName(), version + 1);
+              if (dirtyStructure.contains(collection.getName())) {
+                if (log.isDebugEnabled()) log.debug("structure change in {}", collection.getName());
+                dirtyStructure.remove(collection.getName());
+                reader.getZkClient().setData(pathSCN, null, -1, true);
+
                 ZkNodeProps updates = stateUpdates.get(collection.getName());
                 if (updates != null) {
-                  String stateUpdatesPath = ZkStateReader.getCollectionStateUpdatesPath(collection.getName());
-                  if (log.isDebugEnabled()) log.debug("write state updates for collection {} {}", collection.getName(), updates);
-                  dirtyState.remove(collection.getName());
-                  reader.getZkClient().setData(stateUpdatesPath, Utils.toJSON(updates), -1, true);
+                  updates.getProperties().clear();
                 }
               }
 
-            } catch (InterruptedException | AlreadyClosedException e) {
-              log.info("We have been closed or one of our resources has, bailing {}", e.getClass().getSimpleName() + ":" + e.getMessage());
+            } catch (KeeperException.NoNodeException e) {
+              if (log.isDebugEnabled()) log.debug("No node found for state.json", e);
 
-            } catch (Exception e) {
-              log.error("Failed processing update=" + collection, e);
+              lastVersion.set(-1);
+            //  trackVersions.remove(collection.getName());
+              // likely deleted
+              return;
+
+            } catch (KeeperException.BadVersionException bve) {
+              //lastFailedException.set(bve);
+              //failedUpdates.put(collection.getName(), collection);
+             // Stat estate = reader.getZkClient().exists(path, null);
+              trackVersions.remove(collection.getName());
+              Stat stat = reader.getZkClient().exists(path, null);
+              log.error("Tried to update state.json with bad version {} \n {}", version, stat != null ? stat.getVersion() : "null");
+
+              if (!overseer.isClosed() && stat != null) {
+                trackVersions.put(collection.getName(), stat.getVersion());
+              }
+
+              throw bve;
+
             }
+
+            if (dirtyState.contains(collection.getName())) {
+              ZkNodeProps updates = stateUpdates.get(collection.getName());
+              if (updates != null) {
+                String stateUpdatesPath = ZkStateReader.getCollectionStateUpdatesPath(collection.getName());
+                if (log.isDebugEnabled()) log.debug("write state updates for collection {} {}", collection.getName(), updates);
+                dirtyState.remove(collection.getName());
+                reader.getZkClient().setData(stateUpdatesPath, Utils.toJSON(updates), -1, true);
+              }
+            }
+
+          } catch (KeeperException.BadVersionException bve) {
+            badVersionException.set(bve);
+            return;
+          } catch (InterruptedException | AlreadyClosedException e) {
+            log.info("We have been closed or one of our resources has, bailing {}", e.getClass().getSimpleName() + ":" + e.getMessage());
+
+          } catch (Exception e) {
+            log.error("Failed processing update=" + collection, e);
           }
+        }
 
-        });
+      });
 
-
-
-        //log.info("Done with successful cluster write out");
-
-      } finally {
-        ourLock.unlock();
+      if (badVersionException.get() != null) {
+        throw badVersionException.get();
       }
-//    } finally {
-//      writeLock.unlock();
-//    }
+
+      //log.info("Done with successful cluster write out");
+
+    } finally {
+      ourLock.unlock();
+    }
+    //    } finally {
+    //      writeLock.unlock();
+    //    }
     // nocommit - harden against failures and exceptions
 
     //    if (log.isDebugEnabled()) {
     //      log.debug("writePendingUpdates() - end - New Cluster State is: {}", newClusterState);
     //    }
-
   }
 
   private void waitForStateWePublishedToComeBack() {

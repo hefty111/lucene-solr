@@ -115,7 +115,7 @@ class SolrCores implements Closeable {
     }
 
     cores.forEach((s, solrCore) -> {
-      container.solrCoreCloseExecutor.submit(() -> {
+      container.solrCoreExecutor.submit(() -> {
         MDCLoggingContext.setCore(solrCore);
         try {
           solrCore.closeAndWait();

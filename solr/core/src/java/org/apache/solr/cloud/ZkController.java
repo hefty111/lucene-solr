@@ -170,7 +170,7 @@ public class ZkController implements Closeable, Runnable {
 
   @Override
   public void run() {
-    disconnect(false);
+    disconnect(true);
   }
 
   public boolean isDcCalled() {
@@ -628,7 +628,7 @@ public class ZkController implements Closeable, Runnable {
   }
 
   public void disconnect(boolean publishDown) {
-    if (log.isDebugEnabled()) log.debug("disconnect");
+    log.info("disconnect");
     this.dcCalled = true;
 
     try {
@@ -650,7 +650,6 @@ public class ZkController implements Closeable, Runnable {
           }
           return "PublishDown";
         });
-        closer.collect();
       }
 
       closer.collect(leaderElectors);
@@ -1432,7 +1431,7 @@ public class ZkController implements Closeable, Runnable {
 //            throw new AlreadyClosedException();
 //          }
 
-          leader = zkStateReader.getLeaderRetry(collection, shardId, 1500, false);
+          leader = zkStateReader.getLeaderRetry(collection, shardId, 3000, false);
 
         } catch (TimeoutException timeoutException) {
            log.info("Timeout waiting to see leader, retry");
@@ -1569,44 +1568,6 @@ public class ZkController implements Closeable, Runnable {
     }
   }
 
-  // timeoutms is the timeout for the first call to get the leader - there is then
-  // a longer wait to make sure that leader matches our local state
-  private String getLeader(final CloudDescriptor cloudDesc, int timeoutms) {
-
-    String collection = cloudDesc.getCollectionName();
-    String shardId = cloudDesc.getShardId();
-    // rather than look in the cluster state file, we go straight to the zknodes
-    // here, because on cluster restart there could be stale leader info in the
-    // cluster state node that won't be updated for a moment
-    String leaderUrl;
-    try {
-      leaderUrl = getLeaderProps(collection, cloudDesc.getShardId(), timeoutms)
-              .getCoreUrl();
-
-      zkStateReader.waitForState(collection, timeoutms * 2, TimeUnit.MILLISECONDS, (n, c) -> checkLeaderUrl(cloudDesc, leaderUrl, collection, shardId, leaderConflictResolveWait));
-
-    } catch (Exception e) {
-      ParWork.propagateInterrupt(e);
-      throw new SolrException(ErrorCode.SERVER_ERROR, "Error getting leader from zk", e);
-    }
-    return leaderUrl;
-  }
-
-  private boolean checkLeaderUrl(CloudDescriptor cloudDesc, String leaderUrl, String collection, String shardId,
-                                 int timeoutms) {
-    // now wait until our currently cloud state contains the latest leader
-    String clusterStateLeaderUrl;
-    try {
-      clusterStateLeaderUrl = zkStateReader.getLeaderUrl(collection, shardId, 10000);
-
-      // leaderUrl = getLeaderProps(collection, cloudDesc.getShardId(), timeoutms).getCoreUrl();
-    } catch (Exception e) {
-      ParWork.propagateInterrupt(e);
-      throw new SolrException(ErrorCode.SERVER_ERROR, e);
-    }
-    return clusterStateLeaderUrl != null;
-  }
-
   /**
    * Get leader props directly from zk nodes.
    * @throws SessionExpiredException on zk session expiration.
@@ -1656,6 +1617,7 @@ public class ZkController implements Closeable, Runnable {
     Map<String, Object> props = new HashMap<>();
     // we only put a subset of props into the leader node
     props.put(ZkStateReader.NODE_NAME_PROP, getNodeName());
+    props.put(CORE_NAME_PROP, cd.getName());
 
     Replica replica = new Replica(cd.getName(), props, collection, shardId, zkStateReader);
     LeaderElector leaderElector;
@@ -1751,9 +1713,6 @@ public class ZkController implements Closeable, Runnable {
       props.put(ZkStateReader.COLLECTION_PROP, collection);
       props.put(ZkStateReader.REPLICA_TYPE, cd.getCloudDescriptor().getReplicaType().toString());
 
-      if (numShards != null) {
-        props.put(ZkStateReader.NUM_SHARDS_PROP, numShards.toString());
-      }
       try (SolrCore core = cc.getCore(cd.getName())) {
         if (core != null && core.getDirectoryFactory().isSharedStorage()) {
           // nocommit

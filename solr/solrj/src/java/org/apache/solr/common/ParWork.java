@@ -73,15 +73,15 @@ public class ParWork implements Closeable {
 
   private static volatile ParWorkExecutor EXEC;
 
-  // pretty much don't use it
   public static ParWorkExecutor getRootSharedExecutor() {
     if (EXEC == null) {
       synchronized (ParWork.class) {
         if (EXEC == null) {
           EXEC = (ParWorkExecutor) getParExecutorService("RootExec",
-              Integer.getInteger("solr.rootSharedThreadPoolCoreSize", 15), Integer.MAX_VALUE, 1000,
+              Integer.getInteger("solr.rootSharedThreadPoolCoreSize", 200), Integer.MAX_VALUE, 1000,
               new SynchronousQueue());
           ((ParWorkExecutor)EXEC).enableCloseLock();
+          EXEC.prestartAllCoreThreads();
         }
       }
     }
@@ -89,10 +89,12 @@ public class ParWork implements Closeable {
   }
 
   public static void shutdownParWorkExecutor() {
-    try {
-      shutdownParWorkExecutor(EXEC, true);
-    } finally {
-      EXEC = null;
+    synchronized (ParWork.class) {
+      try {
+        shutdownParWorkExecutor(EXEC, true);
+      } finally {
+        EXEC = null;
+      }
     }
   }
 
@@ -496,7 +498,7 @@ public class ParWork implements Closeable {
         Integer minThreads;
         Integer maxThreads;
         minThreads = 4;
-        maxThreads = PROC_COUNT;
+        maxThreads = PROC_COUNT / 2;
         exec = getExecutorService(Math.max(minThreads, maxThreads)); // keep alive directly affects how long a worker might
        // ((PerThreadExecService)exec).closeLock(true);
         // be stuck in poll without an enqueue on shutdown

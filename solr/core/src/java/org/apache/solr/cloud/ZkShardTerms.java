@@ -24,7 +24,6 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -99,7 +98,7 @@ public class ZkShardTerms implements Closeable {
     void close();
   }
 
-  public ZkShardTerms(String collection, String shard, SolrZkClient zkClient) throws IOException{
+  public ZkShardTerms(String collection, String shard, SolrZkClient zkClient) throws IOException, KeeperException {
     this.znodePath = ZkStateReader.COLLECTIONS_ZKNODE + "/" + collection + "/terms/" + shard;
     this.collection = collection;
     this.shard = shard;
@@ -223,7 +222,7 @@ public class ZkShardTerms implements Closeable {
    */
   void registerTerm(String coreNodeName) throws KeeperException, InterruptedException {
     ShardTerms newTerms;
-    while ( (newTerms = terms.get().registerTerm(coreNodeName)) != null) {
+    while ((newTerms = terms.get().registerTerm(coreNodeName)) != null) {
       if (forceSaveTerms(newTerms)) break;
     }
   }
@@ -324,6 +323,7 @@ public class ZkShardTerms implements Closeable {
    */
   private boolean saveTerms(ShardTerms newTerms) throws KeeperException, InterruptedException {
     byte[] znodeData = Utils.toJSON(newTerms);
+
     try {
       Stat stat = zkClient.setData(znodePath, znodeData, newTerms.getVersion(), true);
       ShardTerms newShardTerms = new ShardTerms(newTerms, stat.getVersion());
@@ -331,7 +331,12 @@ public class ZkShardTerms implements Closeable {
       if (log.isDebugEnabled()) log.debug("Successful update of terms at {} to {}", znodePath, newTerms);
       return true;
     } catch (KeeperException.BadVersionException e) {
-      log.info("Failed to save terms, version is not a match, retrying version={}", newTerms.getVersion());
+      int foundVersion = -1;
+      Stat stat = zkClient.exists(znodePath, null);
+      if (stat != null) {
+        foundVersion = stat.getVersion();
+      }
+      log.info("Failed to save terms, version is not a match, retrying version={} found={}", newTerms.getVersion(), foundVersion);
 
       if (isClosed.get()) {
         throw new AlreadyClosedException();
@@ -353,8 +358,11 @@ public class ZkShardTerms implements Closeable {
         if (Watcher.Event.EventType.None == event.getType()) {
           return;
         }
-        if (event.getType() == Watcher.Event.EventType.NodeCreated || event.getType() == Watcher.Event.EventType.NodeDataChanged) {
+
+        try {
           retryRegisterWatcher();
+        } catch (KeeperException e) {
+          log.warn("Exception refreshing terms on watcher event", e);
         }
       };
       Stat stat = new Stat();
@@ -365,7 +373,7 @@ public class ZkShardTerms implements Closeable {
     } catch (KeeperException.NoNodeException e) {
       log.warn("No node found for shard terms", e);
       // we have likely been deleted
-      return;
+      throw new AlreadyClosedException("No node found for shard terms");
     } catch (InterruptedException e) {
       ParWork.propagateInterrupt(e);
       throw new SolrException(SolrException.ErrorCode.SERVER_ERROR, "Error updating shard term for collection: " + collection, e);
@@ -377,26 +385,8 @@ public class ZkShardTerms implements Closeable {
   /**
    * Retry register a watcher to the correspond ZK term node
    */
-  private void retryRegisterWatcher() {
-    while (!isClosed.get()) {
-      try {
-        refreshTerms(true);
-        return;
-      } catch (KeeperException.AuthFailedException e) {
-        isClosed.set(true);
-        log.error("Failed watching shard term for collection: {} due to unrecoverable exception", collection, e);
-        return;
-      } catch (KeeperException e) {
-        log.warn("Failed watching shard term for collection: {}, retrying!", collection, e);
-        try {
-          zkClient.getConnectionManager().waitForConnected(zkClient.getZkClientTimeout());
-        } catch (TimeoutException | InterruptedException te) {
-          if (Thread.interrupted()) {
-            throw new SolrException(SolrException.ErrorCode.SERVER_ERROR, "Error watching shard term for collection: " + collection, te);
-          }
-        }
-      }
-    }
+  private void retryRegisterWatcher() throws KeeperException {
+    refreshTerms(true);
   }
 
   /**

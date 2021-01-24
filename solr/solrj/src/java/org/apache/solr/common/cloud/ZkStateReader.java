@@ -968,33 +968,6 @@ public class ZkStateReader implements SolrCloseable, Replica.NodeNameToBaseUrl {
    * Get shard leader properties, with retry if none exist.
    */
   public Replica getLeaderRetry(String collection, String shard, int timeout, boolean mustBeLive) throws InterruptedException, TimeoutException {
-
-    DocCollection coll = getClusterState().getCollectionOrNull(collection);
-
-    if (coll != null) {
-      Slice slice = coll.getSlice(shard);
-      if (slice != null) {
-        Replica leader = slice.getLeader();
-        boolean valid = false;
-        try {
-          valid = mustBeLive ? leader != null && isNodeLive(leader.getNodeName()) || zkClient.exists(COLLECTIONS_ZKNODE + "/" + collection + "/leaders/" + slice.getName() + "/leader") : leader != null && isNodeLive(leader.getNodeName());
-        } catch (KeeperException e) {
-
-        } catch (InterruptedException e) {
-
-        }
-        if (leader != null && leader.getState() == Replica.State.ACTIVE && valid) {
-          return leader;
-        }
-        Collection<Replica> replicas = slice.getReplicas();
-        for (Replica replica : replicas) {
-          if ("true".equals(replica.getProperty(LEADER_PROP)) && replica.getState() == Replica.State.ACTIVE && valid) {
-            return replica;
-          }
-        }
-      }
-    }
-
     AtomicReference<Replica> returnLeader = new AtomicReference<>();
     try {
       waitForState(collection, timeout, TimeUnit.MILLISECONDS, (n, c) -> {
@@ -1002,26 +975,40 @@ public class ZkStateReader implements SolrCloseable, Replica.NodeNameToBaseUrl {
           return false;
         Slice slice = c.getSlice(shard);
         if (slice == null) return false;
+        Replica zkLeader = null;
         Replica leader = slice.getLeader();
-        boolean valid = false;
-        try {
-          valid = mustBeLive ?  (leader != null && isNodeLive(leader.getNodeName())) ||
-              zkClient.exists(COLLECTIONS_ZKNODE + "/" + collection + "/leaders/" + slice.getName()  + "/leader") :
-              leader != null && isNodeLive(leader.getNodeName());
-        } catch (KeeperException e) {
-          return false;
-        } catch (InterruptedException e) {
-          return false;
-        }
-        if (leader != null && leader.getState() == Replica.State.ACTIVE && valid) {
-          returnLeader.set(leader);
-          return true;
+        if (leader != null && leader.getState() == Replica.State.ACTIVE) {
+          if (isNodeLive(leader.getNodeName())) {
+            returnLeader.set(leader);
+            return true;
+          }
+
+          if (!mustBeLive) {
+            if (zkLeader == null) {
+              zkLeader = getLeaderProps(collection, shard);
+            }
+            if (zkLeader != null && zkLeader.getName().equals(leader.getName())) {
+              returnLeader.set(leader);
+              return true;
+            }
+          }
         }
         Collection<Replica> replicas = slice.getReplicas();
         for (Replica replica : replicas) {
-          if ("true".equals(replica.getProperty(LEADER_PROP)) && replica.getState() == Replica.State.ACTIVE && valid) {
-            returnLeader.set(replica);
-            return true;
+          if ("true".equals(replica.getProperty(LEADER_PROP)) && replica.getState() == Replica.State.ACTIVE) {
+            if (isNodeLive(replica.getNodeName())) {
+              returnLeader.set(replica);
+              return true;
+            }
+            if (!mustBeLive) {
+              if (zkLeader == null) {
+                zkLeader = getLeaderProps(collection, shard);
+              }
+              if (zkLeader != null && zkLeader.getName().equals(replica.getName())) {
+                returnLeader.set(replica);
+                return true;
+              }
+            }
           }
         }
 
@@ -1033,6 +1020,25 @@ public class ZkStateReader implements SolrCloseable, Replica.NodeNameToBaseUrl {
           + " with live_nodes=" + liveNodes);
     }
     return returnLeader.get();
+  }
+
+  public Replica getLeaderProps(final String collection, final String slice) {
+
+    try {
+      byte[] data = zkClient.getData(ZkStateReader.getShardLeadersPath(collection, slice), null, null);
+      ZkCoreNodeProps leaderProps = new ZkCoreNodeProps(ZkNodeProps.load(data));
+      String name = leaderProps.getNodeProps().getStr(ZkStateReader.CORE_NAME_PROP);
+      leaderProps.getNodeProps().getProperties().remove(ZkStateReader.CORE_NAME_PROP);
+      // nocommit - right key for leader name?
+      return new Replica(name, leaderProps.getNodeProps().getProperties(), collection, slice, this);
+
+    } catch (KeeperException.NoNodeException e) {
+      return null;
+    } catch (Exception e) {
+      SolrZkClient.checkInterrupted(e);
+      throw new SolrException(ErrorCode.SERVER_ERROR, e);
+    }
+
   }
 
   /**
@@ -1594,6 +1600,8 @@ public class ZkStateReader implements SolrCloseable, Replica.NodeNameToBaseUrl {
           work.collect("", () -> {
             try {
               zk.removeWatches(getCollectionSCNPath(coll), this, WatcherType.Any, true);
+            } catch (KeeperException.NoWatcherException e) {
+
             } catch (Exception e) {
               log.info("could not remove watch {} {}", e.getClass().getSimpleName(), e.getMessage());
             }
@@ -1602,6 +1610,8 @@ public class ZkStateReader implements SolrCloseable, Replica.NodeNameToBaseUrl {
             work.collect("", () -> {
               try {
                 zk.removeWatches(getCollectionStateUpdatesPath(coll), watcher, WatcherType.Any, true);
+              } catch (KeeperException.NoWatcherException e) {
+
               } catch (Exception e) {
                 log.info("could not remove watch {} {}", e.getClass().getSimpleName(), e.getMessage());
               }

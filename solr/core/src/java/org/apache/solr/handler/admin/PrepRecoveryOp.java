@@ -69,7 +69,6 @@ class PrepRecoveryOp implements CoreAdminHandler.CoreAdminOp {
     try {
       coreContainer.getZkController().getZkStateReader().waitForState(collection, 5, TimeUnit.SECONDS, (n, c) -> {
         if (c == null) {
-          log.info("collection not found {}", collection);
           return false;
         }
 
@@ -80,8 +79,7 @@ class PrepRecoveryOp implements CoreAdminHandler.CoreAdminOp {
         if (replica != null) {
           isLive = coreContainer.getZkController().getZkStateReader().isNodeLive(replica.getNodeName());
           if (replica.getState() == waitForState) {
-            // if (log.isDebugEnabled()) log.debug("replica={} state={} waitForState={}", replica, replica.getState(), waitForState);
-            log.info("replica={} state={} waitForState={} isLive={}", replica, replica.getState(), waitForState, coreContainer.getZkController().getZkStateReader().isNodeLive(replica.getNodeName()));
+            if (log.isDebugEnabled()) log.debug("replica={} state={} waitForState={} isLive={}", replica, replica.getState(), waitForState, coreContainer.getZkController().getZkStateReader().isNodeLive(replica.getNodeName()));
             return true;
           }
         }

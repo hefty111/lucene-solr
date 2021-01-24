@@ -540,7 +540,7 @@ public abstract class CachingDirectoryFactory extends DirectoryFactory {
       //    }
       cacheValue.refCnt--;
 
-      if (cacheValue.refCnt == 0 && cacheValue.doneWithDir ||  closed) {
+      if (cacheValue.refCnt == 0 && cacheValue.doneWithDir || closed) {
         boolean cl = closeCacheValue(cacheValue);
         if (cl) {
           removeFromCache(cacheValue);

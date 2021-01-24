@@ -22,6 +22,7 @@ import java.nio.file.Path;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.TimeUnit;
 
 import org.apache.commons.lang3.StringUtils;
 import org.apache.solr.cloud.CloudDescriptor;
@@ -99,8 +100,9 @@ enum CoreAdminOperation implements CoreAdminOp {
         log().warn("Will not create SolrCore, CoreContainer is shutdown");
         throw new AlreadyClosedException("Will not create SolrCore, CoreContainer is shutdown");
       }
-
+      long start = System.nanoTime();
       coreContainer.create(coreName, instancePath, coreParams, newCollection);
+      log().info("SolrCore {} created in {}ms", coreName, TimeUnit.NANOSECONDS.convert(System.nanoTime() - start, TimeUnit.MILLISECONDS));
 
       it.rsp.add("core", coreName);
     } finally {
@@ -283,6 +285,8 @@ enum CoreAdminOperation implements CoreAdminOp {
     }
   });
 
+  private static final Logger log = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
+
   final CoreAdminParams.CoreAdminAction action;
   final CoreAdminOp fun;
 
@@ -291,7 +295,7 @@ enum CoreAdminOperation implements CoreAdminOp {
     this.fun = fun;
   }
 
-  private static final Logger log = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
+
 
   static Logger log() {
     return log;

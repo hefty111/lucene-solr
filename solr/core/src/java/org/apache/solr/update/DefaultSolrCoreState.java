@@ -272,7 +272,7 @@ public final class DefaultSolrCoreState extends SolrCoreState implements Recover
     SolrIndexWriter iw;
     try {
       iw = SolrIndexWriter.buildIndexWriter(core, name, core.getNewIndexDir(), core.getDirectoryFactory(), false, core.getLatestSchema(),
-              core.getSolrConfig().indexConfig, core.getDeletionPolicy(), core.getCodec());
+              core.getSolrConfig().indexConfig, core.getDeletionPolicy(), core.getCodec(), false);
     } catch (Exception e) {
       ParWork.propagateInterrupt(e);
       throw new SolrException(ErrorCode.SERVER_ERROR, e);
@@ -432,7 +432,7 @@ public final class DefaultSolrCoreState extends SolrCoreState implements Recover
 
   @Override
   public void cancelRecovery(boolean wait, boolean prepForClose) {
-    log.info("Cancel recovery");
+    if (log.isDebugEnabled()) log.debug("Cancel recovery");
     recoverying = false;
     
     if (prepForClose) {
